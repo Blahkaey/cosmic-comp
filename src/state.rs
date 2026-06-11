@@ -31,7 +31,7 @@ use crate::{
 };
 use anyhow::Context;
 use calloop::RegistrationToken;
-use cosmic_comp_config::output::comp::{OutputConfig, OutputState};
+use cosmic_comp_config::{AppearanceConfig, output::comp::{OutputConfig, OutputState}};
 use i18n_embed::{
     DesktopLanguageRequester,
     fluent::{FluentLanguageLoader, fluent_language_loader},
@@ -636,7 +636,13 @@ impl State {
             .unwrap();
 
         let clock = Clock::new();
-        let config = Config::load(&handle);
+        let mut config = Config::load(&handle);
+        config.cosmic_conf.active_hint = false;
+        config.cosmic_conf.appearance_settings = AppearanceConfig {
+            clip_floating_windows: false,
+            clip_tiled_windows: false,
+            shadow_tiled_windows: false,
+        };
         let compositor_state = CompositorState::new::<Self>(dh);
         let corner_radius_state = CornerRadiusState::new::<Self>(dh);
         let data_device_state = DataDeviceState::new::<Self>(dh);
