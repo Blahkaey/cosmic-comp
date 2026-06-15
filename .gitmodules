@@ -1,0 +1,3 @@
+[submodule "deps/smithay"]
+	path = deps/smithay
+	url = https://github.com/Blahkaey/smithay.git
