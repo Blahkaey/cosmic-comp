@@ -38,7 +38,6 @@ use smithay::{
     wayland::{
         dmabuf::DmabufGlobal,
         drm_syncobj::{DrmSyncobjState, supports_syncobj_eventfd},
-        relative_pointer::RelativePointerManagerState,
     },
 };
 use surface::GbmDrmOutput;
@@ -181,7 +180,7 @@ pub fn init_backend(
 }
 
 fn init_libinput(
-    dh: &DisplayHandle,
+    _dh: &DisplayHandle,
     session: &LibSeatSession,
     evlh: &LoopHandle<'static, State>,
 ) -> Result<Libinput> {
@@ -212,9 +211,6 @@ fn init_libinput(
     })
     .map_err(|err| err.error)
     .context("Failed to initialize libinput event source")?;
-
-    // Create relative pointer global
-    RelativePointerManagerState::new::<State>(dh);
 
     Ok(libinput_context)
 }
