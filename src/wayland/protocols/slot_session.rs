@@ -27,16 +27,18 @@ use smithay::{
 };
 use wayland_backend::{protocol::WEnum, server::ClientId};
 
-use crate::{
-    shell::{CosmicSurface, element::surface::WeakCosmicSurface},
-    utils::prelude::Local,
-};
+use crate::shell::{CosmicSurface, WeakCosmicSurface};
+use crate::utils::prelude::Local;
 
 use self::slot_session::SlotSession as SlotSessionResource;
 
 pub trait SlotSessionHandler {
     fn slot_session_state(&mut self) -> &mut SlotSessionState;
     fn slot_session_finished(&mut self);
+    fn slot_session_committed(
+        &mut self,
+        reconfigure: Vec<(WeakCosmicSurface, Rectangle<i32, Local>)>,
+    );
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -155,20 +157,31 @@ impl SlotSessionState {
         }
     }
 
-    fn commit_session(&mut self) {
+    fn commit_session(&mut self) -> Vec<(WeakCosmicSurface, Rectangle<i32, Local>)> {
         let Some(session) = self.session.as_mut() else {
-            return;
+            return Vec::new();
         };
 
-        session.live = std::mem::take(&mut session.staged)
+        let staged = std::mem::take(&mut session.staged);
+        let old = std::mem::take(&mut session.live);
+        let mut reconfigure = Vec::new();
+        session.live = staged
             .into_iter()
             .map(|(slot, rect)| {
-                (
-                    slot,
-                    SessionSlot { rect, window: None },
-                )
+                let prev = old.get(&slot);
+                let window = prev
+                    .and_then(|s| s.window.clone())
+                    .filter(|w| w.upgrade().is_some());
+                if prev.is_some_and(|p| p.rect != rect)
+                    && let Some(window) = &window
+                {
+                    reconfigure.push((window.clone(), rect));
+                }
+                (slot, SessionSlot { rect, window })
             })
             .collect();
+
+        reconfigure
     }
 
     pub fn pointer_mode(&self) -> PointerMode {
@@ -208,6 +221,15 @@ impl SlotSessionState {
     pub fn clear_captured(&mut self) {
         if let Some(session) = self.session.as_mut() {
             session.captured = None;
+        }
+    }
+
+    pub fn update_captured_rect(&mut self, window: &CosmicSurface, rect: Rectangle<i32, Local>) {
+        if let Some(session) = self.session.as_mut()
+            && let Some(captured) = session.captured.as_mut()
+            && window == &captured.surface
+        {
+            captured.rect = rect;
         }
     }
 
@@ -296,7 +318,8 @@ where
                 state.slot_session_state().set_option(option, value);
             }
             slot_session::Request::Commit => {
-                state.slot_session_state().commit_session();
+                let reconfigure = state.slot_session_state().commit_session();
+                state.slot_session_committed(reconfigure);
             }
             slot_session::Request::End => {}
         }

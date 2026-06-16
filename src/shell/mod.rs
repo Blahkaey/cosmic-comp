@@ -92,7 +92,7 @@ pub mod layout;
 mod seats;
 mod workspace;
 pub mod zoom;
-pub use self::element::{CosmicMapped, CosmicMappedRenderElement, CosmicSurface};
+pub use self::element::{CosmicMapped, CosmicMappedRenderElement, CosmicSurface, WeakCosmicSurface};
 pub use self::seats::*;
 pub use self::workspace::*;
 use self::zoom::{OutputZoomState, ZoomState};
@@ -2811,6 +2811,20 @@ impl Shell {
         }
 
         KeyboardFocusTarget::from(mapped)
+    }
+
+    pub(crate) fn reconfigure_session_slot(
+        &mut self,
+        window: &CosmicSurface,
+        output: &Output,
+        rect: Rectangle<i32, Local>,
+    ) {
+        let Some(mapped) = self.element_for_surface(window).cloned() else {
+            return;
+        };
+        if let Some(workspace) = self.workspaces.active_mut(output) {
+            workspace.floating_layer.map_exact(mapped, rect);
+        }
     }
 
     #[must_use]
