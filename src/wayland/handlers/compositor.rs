@@ -393,7 +393,10 @@ impl State {
             .find(|pending| pending.surface.wl_surface().as_deref() == Some(surface))
             && let Some(toplevel) = pending.surface.0.toplevel()
         {
-            let initial_size = if let Some(output) = pending.fullscreen.as_ref() {
+            let instance_id = security_context_instance_id(surface);
+            let initial_size = if instance_id.is_some() {
+                None
+            } else if let Some(output) = pending.fullscreen.as_ref() {
                 Some(output.geometry().size.as_logical())
             } else if pending.maximized {
                 let active_output = shell.seats.last_active().active_output();
@@ -408,6 +411,33 @@ impl State {
             {
                 let window = pending.surface.clone();
                 window.on_commit();
+
+                if let Some(instance_id) = instance_id {
+                    let rect = self
+                        .common
+                        .slot_session_state
+                        .claim_slot_for_instance_id(&instance_id, &window);
+                    if let Some(rect) = rect {
+                        let output = shell
+                            .outputs()
+                            .next()
+                            .cloned()
+                            .expect("slot session output present");
+                        let target = shell.map_session_slot(
+                            &window,
+                            &output,
+                            rect,
+                            &mut self.common.toplevel_info_state,
+                            &mut self.common.workspace_state,
+                            &self.common.event_loop_handle,
+                        );
+                        let seat = shell.seats.last_active().clone();
+                        std::mem::drop(shell);
+                        Shell::set_focus(self, Some(&target), &seat, None, true);
+                        return true;
+                    }
+                }
+
                 let res = shell.map_window(
                     &window,
                     &mut self.common.toplevel_info_state,

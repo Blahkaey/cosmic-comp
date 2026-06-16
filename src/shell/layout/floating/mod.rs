@@ -617,6 +617,25 @@ impl FloatingLayout {
         self.space.refresh();
     }
 
+    pub(in crate::shell) fn map_exact(
+        &mut self,
+        mapped: CosmicMapped,
+        rect: Rectangle<i32, Local>,
+    ) {
+        let output = self.space.outputs().next().unwrap().clone();
+        let layers = layer_map_for_output(&output);
+        let output_geometry = layers.non_exclusive_zone().as_local();
+
+        mapped.set_bounds(output_geometry.size.as_logical());
+        mapped.set_tiled(false);
+        mapped.set_maximized(false);
+        mapped.set_geometry(rect.to_global(&output));
+        mapped.configure();
+
+        self.space.map_element(mapped, rect.loc.as_logical(), false);
+        self.space.refresh();
+    }
+
     pub fn remap_minimized(
         &mut self,
         mapped: CosmicMapped,

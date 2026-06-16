@@ -27,7 +27,10 @@ use smithay::{
 };
 use wayland_backend::{protocol::WEnum, server::ClientId};
 
-use crate::utils::prelude::Local;
+use crate::{
+    shell::{CosmicSurface, element::surface::WeakCosmicSurface},
+    utils::prelude::Local,
+};
 
 use self::slot_session::SlotSession as SlotSessionResource;
 
@@ -45,7 +48,7 @@ pub enum PointerMode {
 
 #[derive(Debug)]
 struct ActiveSession {
-    live: HashMap<u32, Rectangle<i32, Local>>,
+    live: HashMap<u32, SessionSlot>,
     staged: HashMap<u32, Rectangle<i32, Local>>,
     pointer_mode: PointerMode,
     captured: Option<CapturedSlot>,
@@ -57,6 +60,12 @@ pub struct CapturedSlot {
     pub surface: WlSurface,
     pub rect: Rectangle<i32, Local>,
     pub output: Output,
+}
+
+#[derive(Debug)]
+struct SessionSlot {
+    rect: Rectangle<i32, Local>,
+    window: Option<WeakCosmicSurface>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -151,7 +160,15 @@ impl SlotSessionState {
             return;
         };
 
-        session.live = std::mem::take(&mut session.staged);
+        session.live = std::mem::take(&mut session.staged)
+            .into_iter()
+            .map(|(slot, rect)| {
+                (
+                    slot,
+                    SessionSlot { rect, window: None },
+                )
+            })
+            .collect();
     }
 
     pub fn pointer_mode(&self) -> PointerMode {
@@ -166,10 +183,8 @@ impl SlotSessionState {
         instance_id: &str,
     ) -> Option<Rectangle<i32, Local>> {
         let session = self.session.as_ref()?;
-        let slot = instance_id
-            .strip_prefix("partydeck-slot-")
-            .and_then(|n| n.parse::<u32>().ok())?;
-        session.live.get(&slot).copied()
+        let slot = instance_id.parse::<u32>().ok()?;
+        Some(session.live.get(&slot)?.rect)
     }
 
     pub fn captured(&self) -> Option<CapturedSlot> {
@@ -208,7 +223,20 @@ impl SlotSessionState {
         }
     }
 
-    fn finish_session(&mut self) -> bool {
+    pub fn claim_slot_for_instance_id(
+        &mut self,
+        instance_id: &str,
+        window: &CosmicSurface,
+    ) -> Option<Rectangle<i32, Local>> {
+        let session = self.session.as_mut()?;
+        let slot = instance_id.parse::<u32>().ok()?;
+        let slot_state = session.live.get_mut(&slot)?;
+        let rect = slot_state.rect;
+        slot_state.window = Some(window.downgrade());
+        Some(rect)
+    }
+
+    pub fn finish_session(&mut self) -> bool {
         self.session.take().is_some()
     }
 }

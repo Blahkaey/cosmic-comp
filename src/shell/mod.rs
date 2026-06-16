@@ -1534,6 +1534,11 @@ impl Common {
     }
 
     pub fn remove_output(&mut self, output: &Output) {
+        if self.slot_session_state.finish_session() {
+            error!("PartyDeck slot session failed: output disappeared");
+            self.event_loop_signal.stop();
+            self.event_loop_signal.wakeup();
+        }
         let mut shell = self.shell.write();
         let shell_ref = &mut *shell;
         shell_ref.workspaces.remove_output(
@@ -2756,6 +2761,56 @@ impl Shell {
         }
 
         window
+    }
+
+    pub(crate) fn map_session_slot(
+        &mut self,
+        window: &CosmicSurface,
+        output: &Output,
+        rect: Rectangle<i32, Local>,
+        toplevel_info: &mut ToplevelInfoState<State, CosmicSurface>,
+        workspace_state: &mut WorkspaceState<State>,
+        loop_handle: &LoopHandle<'static, State>,
+    ) -> KeyboardFocusTarget {
+        let pos = self
+            .pending_windows
+            .iter()
+            .position(|pending| &pending.surface == window)
+            .unwrap();
+        let PendingWindow {
+            surface: window,
+            seat: _,
+            fullscreen: _,
+            maximized: _,
+            sticky: _,
+        } = self.pending_windows.remove(pos);
+
+        let _ = self.pending_activations.remove(&(&window).into());
+
+        let mapped = CosmicMapped::from(CosmicWindow::new(
+            window.clone(),
+            loop_handle.clone(),
+            self.theme.clone(),
+            self.appearance_conf,
+        ));
+        #[cfg(feature = "debug")]
+        {
+            mapped.set_debug(self.debug_active);
+        }
+
+        let workspace = self.workspaces.active_mut(output).unwrap();
+        toplevel_info.new_toplevel(&window, workspace_state);
+        toplevel_enter_output(&window, output);
+        toplevel_enter_workspace(&window, &workspace.handle);
+
+        workspace.floating_layer.map_exact(mapped.clone(), rect);
+
+        let active_space = self.active_space(output).unwrap();
+        for mapped in active_space.mapped() {
+            self.update_reactive_popups(mapped);
+        }
+
+        KeyboardFocusTarget::from(mapped)
     }
 
     #[must_use]
