@@ -6,6 +6,7 @@ use crate::{
     shell::{Devices, SeatExt},
     state::{BackendData, Common},
     utils::prelude::*,
+    wayland::protocols::slot_session::SlotOutputConfig,
 };
 use anyhow::{Context, Result, anyhow};
 use cosmic_comp_config::output::comp::OutputConfig;
@@ -60,9 +61,20 @@ pub struct X11State {
 }
 
 impl X11State {
-    pub fn add_window(&mut self, handle: LoopHandle<'_, State>) -> Result<Output> {
-        let window = WindowBuilder::new()
-            .title("COSMIC")
+    pub fn add_window(
+        &mut self,
+        handle: LoopHandle<'_, State>,
+        config: Option<SlotOutputConfig>,
+    ) -> Result<Output> {
+        let mut builder = WindowBuilder::new()
+            .title("COSMIC");
+        if let Some(config) = config {
+            builder = builder
+                    .size(config.mode_size)
+                    .cursor_visible(false)
+                    .fullscreen(true);
+        }
+        let window = builder
             .build(&self.handle)
             .with_context(|| "Failed to create window")?;
         let fourcc = window.format();
@@ -100,7 +112,7 @@ impl X11State {
         };
         let mode = Mode {
             size: (size.w as i32, size.h as i32).into(),
-            refresh: 60_000,
+            refresh: config.map_or(60_000, |c| c.refresh as i32 * 1000),
         };
         let output = Output::new(name, props);
         output.add_mode(mode);
@@ -113,7 +125,10 @@ impl X11State {
         );
         output.user_data().insert_if_missing(|| {
             RefCell::new(OutputConfig {
-                mode: ((size.w as i32, size.h as i32), None),
+                mode: (
+                    (size.w as i32, size.h as i32),
+                    config.map(|c| c.refresh * 1000),
+                ),
                 ..Default::default()
             })
         });
@@ -363,7 +378,7 @@ pub fn init_backend(
     let output = state
         .backend
         .x11()
-        .add_window(event_loop.handle())
+        .add_window(event_loop.handle(), state.common.slot_session_state.output_config())
         .with_context(|| "Failed to create wl_output")?;
     state
         .common
@@ -422,10 +437,6 @@ pub fn init_backend(
                 window_id,
             } => {
                 let size = { (new_size.w as i32, new_size.h as i32).into() };
-                let mode = Mode {
-                    size,
-                    refresh: 60_000,
-                };
                 if let Some(surface) = state
                     .backend
                     .x11()
@@ -434,6 +445,10 @@ pub fn init_backend(
                     .find(|s| s.window.id() == window_id)
                 {
                     let output = &surface.output;
+                    let mode = Mode {
+                        size,
+                        refresh: output.current_mode().unwrap().refresh,
+                    };
                     {
                         let mut config = output
                             .user_data()

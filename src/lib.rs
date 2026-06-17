@@ -12,6 +12,7 @@ use smithay::{
         calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
         wayland_server::{Display, DisplayHandle},
     },
+    utils::{Logical, Size},
     wayland::socket::ListeningSocketSource,
 };
 
@@ -29,6 +30,7 @@ use tracing::{error, info, warn};
 use wayland::protocols::overlap_notify::OverlapNotifyState;
 
 use crate::wayland::handlers::compositor::client_compositor_state;
+use crate::wayland::protocols::slot_session::SlotOutputConfig;
 
 use clap_lex::RawArgs;
 
@@ -80,7 +82,9 @@ impl State {
             }
 
             let mut args = env::args().skip(1);
-            self.common.kiosk_child = if let Some(exec) = args.next() {
+            self.common.kiosk_child = if !self.common.slot_session_state.is_slot_mode()
+                && let Some(exec) = args.next()
+            {
                 // Run command in kiosk mode
                 let mut command = process::Command::new(&exec);
                 command.args(args);
@@ -116,6 +120,8 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
     let git_hash = option_env!("GIT_HASH").unwrap_or("unknown");
 
     let mut with_xwayland = false;
+    let mut wayland_display: Option<String> = None;
+    let mut fixed_output_mode: Option<(Size<u16, Logical>, u32)> = None;
     // Parse the arguments
     while let Some(arg) = raw_args.next_os(&mut cursor) {
         match arg.to_str() {
@@ -135,9 +141,27 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
                 );
                 return Ok(());
             }
+            Some("--wayland-display") => {
+                let name = raw_args
+                    .next_os(&mut cursor)
+                    .and_then(|value| value.to_str())
+                    .expect("--wayland-display requires a socket name");
+                wayland_display = Some(name.to_string());
+            }
+            Some("--output-mode") => {
+                let value = raw_args
+                    .next_os(&mut cursor)
+                    .and_then(|value| value.to_str())
+                    .expect("--output-mode requires a WIDTHxHEIGHT@REFRESH value");
+                fixed_output_mode = Some(parse_output_mode(value));
+            }
             _ => {}
         }
     }
+    let slot_output_config = fixed_output_mode.map(|(mode_size, refresh)| SlotOutputConfig {
+        mode_size,
+        refresh,
+    });
 
     // setup logger
     logger::init_logger()?;
@@ -161,13 +185,14 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
     // init event loop
     let mut event_loop = EventLoop::try_new().with_context(|| "Failed to initialize event loop")?;
     // init wayland
-    let (display, socket) = init_wayland_display(&mut event_loop)?;
+    let (display, socket) = init_wayland_display(&mut event_loop, wayland_display.as_deref())?;
     // init state
     let mut state = state::State::new(
         &display,
         socket,
         event_loop.handle(),
         event_loop.get_signal(),
+        slot_output_config,
         with_xwayland,
     );
     // init backend
@@ -262,13 +287,33 @@ Options:
     );
 }
 
+fn parse_output_mode(value: &str) -> (Size<u16, Logical>, u32) {
+    let (size, refresh) = value
+        .split_once('@')
+        .expect("--output-mode must be WIDTHxHEIGHT@REFRESH");
+    let (width, height) = size
+        .split_once('x')
+        .expect("--output-mode must be WIDTHxHEIGHT@REFRESH");
+    let width: u16 = width.parse().expect("invalid --output-mode width");
+    let height: u16 = height.parse().expect("invalid --output-mode height");
+    let refresh: u32 = refresh.parse().expect("invalid --output-mode refresh");
+    ((width, height).into(), refresh)
+}
+
 fn init_wayland_display(
     event_loop: &mut EventLoop<state::State>,
+    socket_name: Option<&str>,
 ) -> Result<(DisplayHandle, OsString)> {
     let display = Display::new().unwrap();
     let handle = display.handle();
 
-    let source = ListeningSocketSource::new_auto().unwrap();
+    let source = if let Some(name) = socket_name {
+        ListeningSocketSource::with_name(name)
+            .with_context(|| format!("Failed to bind requested Wayland socket {:?}", name))?
+    } else {
+        ListeningSocketSource::new_auto()
+            .with_context(|| "Failed to bind automatic Wayland socket")?
+    };
     let socket_name = source.socket_name().to_os_string();
     info!("Listening on {:?}", socket_name);
 

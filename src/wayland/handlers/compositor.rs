@@ -93,6 +93,16 @@ pub fn client_compositor_state(client: &Client) -> &CompositorClientState {
     panic!("Unknown client data type")
 }
 
+pub fn security_context_instance_id(surface: &WlSurface) -> Option<String> {
+    surface
+        .client()?
+        .get_data::<ClientState>()?
+        .security_context
+        .as_ref()?
+        .instance_id
+        .clone()
+}
+
 #[derive(Debug)]
 struct FrametimeData {
     last_commit: Option<Time<Monotonic>>,

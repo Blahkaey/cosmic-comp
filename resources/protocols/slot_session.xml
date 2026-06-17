@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="slot_session">
+  <interface name="slot_session" version="1">
+    <description summary="slot layout session">
+      The client stages slot rectangles with set_slot, then commit makes that staged layout live
+    </description>
+
+    <request name="set_slot">
+      <description summary="stage a slot rectangle">
+        Set the rectangle for slot N. Nothing moves until the next commit.
+      </description>
+      <arg name="slot" type="uint"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+    </request>
+
+    <request name="commit">
+      <description summary="make the staged slots live">
+        Swap the live layout for whatever is currently staged.
+      </description>
+    </request>
+
+    <request name="end" type="destructor">
+      <description summary="tear down the session">
+        Ends the session and destroys this object.
+      </description>
+    </request>
+  </interface>
+</protocol>

@@ -22,6 +22,7 @@ use crate::{
             output_configuration::OutputConfigurationState,
             output_power::OutputPowerState,
             overlap_notify::OverlapNotifyState,
+            slot_session::{SlotOutputConfig, SlotSessionState},
             toplevel_info::ToplevelInfoState,
             toplevel_management::{ManagementCapabilities, ToplevelManagementState},
             workspace::{WorkspaceState, WorkspaceUpdateGuard},
@@ -259,6 +260,7 @@ pub struct Common {
     pub output_configuration_state: OutputConfigurationState<State>,
     pub output_power_state: OutputPowerState,
     pub presentation_state: PresentationState,
+    pub slot_session_state: SlotSessionState,
     pub primary_selection_state: PrimarySelectionState,
     pub ext_data_control_state: ExtDataControlState,
     pub wlr_data_control_state: WlrDataControlState,
@@ -629,6 +631,7 @@ impl State {
         socket: OsString,
         handle: LoopHandle<'static, State>,
         signal: LoopSignal,
+        slot_output_config: Option<SlotOutputConfig>,
         with_xwayland: bool,
     ) -> State {
         let requested_languages = DesktopLanguageRequester::requested_languages();
@@ -654,6 +657,11 @@ impl State {
         let output_configuration_state =
             OutputConfigurationState::new(dh, handle.clone(), client_not_sandboxed);
         let output_power_state = OutputPowerState::new::<Self, _>(dh, client_not_sandboxed);
+        let slot_session_state = SlotSessionState::new::<Self, _>(
+            dh,
+            slot_output_config,
+            client_has_no_security_context,
+        );
         let overlap_notify_state =
             OverlapNotifyState::new::<Self, _>(dh, client_has_no_security_context);
         let presentation_state = PresentationState::new::<Self>(dh, clock.id() as u32);
@@ -778,6 +786,7 @@ impl State {
                 output_state,
                 output_configuration_state,
                 output_power_state,
+                slot_session_state,
                 overlap_notify_state,
                 presentation_state,
                 primary_selection_state,

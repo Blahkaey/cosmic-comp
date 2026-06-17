@@ -32,6 +32,7 @@ pub mod security_context;
 pub mod selection;
 pub mod session_lock;
 pub mod shm;
+pub mod slot_session;
 pub mod tablet_manager;
 pub mod toplevel_info;
 pub mod toplevel_management;
