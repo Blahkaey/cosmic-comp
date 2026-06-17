@@ -5,6 +5,11 @@
       The client stages slot rectangles with set_slot, then commit makes that staged layout live
     </description>
 
+    <enum name="session_option">
+      <entry name="pointer_mode" value="0"
+             summary="cursor handling: 0 hides it, 1 lets it interact"/>
+    </enum>
+
     <request name="set_slot">
       <description summary="stage a slot rectangle">
         Set the rectangle for slot N. Nothing moves until the next commit.
@@ -14,6 +19,14 @@
       <arg name="y" type="int"/>
       <arg name="width" type="uint"/>
       <arg name="height" type="uint"/>
+    </request>
+
+    <request name="set_option">
+      <description summary="set a session option">
+        Applies immediately, whether or not you have committed.
+      </description>
+      <arg name="option" type="uint" enum="session_option"/>
+      <arg name="value" type="uint"/>
     </request>
 
     <request name="commit">

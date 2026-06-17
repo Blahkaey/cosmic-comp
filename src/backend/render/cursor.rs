@@ -211,6 +211,7 @@ pub struct CursorStateInner {
     hidden: bool,
     idle_timer: Option<RegistrationToken>,
     last_armed: Option<Instant>,
+    last_position: Option<Point<f64, Logical>>,
 }
 
 impl CursorStateInner {
@@ -262,9 +263,10 @@ impl Default for CursorStateInner {
             current_image: None,
             image_cache: Vec::new(),
 
-            hidden: false,
+            hidden: true,
             idle_timer: None,
             last_armed: None,
+            last_position: None,
         }
     }
 }
@@ -278,6 +280,7 @@ pub fn draw_cursor<R>(
     buffer_scale: f64,
     time: Time<Monotonic>,
     draw_default: bool,
+    force_default: bool,
 ) -> Vec<(CursorRenderElement<R>, Point<i32, Physical>)>
 where
     R: Renderer + ImportMem + ImportAll,
@@ -294,10 +297,14 @@ where
         return Vec::new();
     }
 
-    let named_cursor = state.current_cursor.or(match cursor_status {
-        CursorImageStatus::Named(named_cursor) => Some(named_cursor),
-        _ => None,
-    });
+    let named_cursor = if force_default {
+        Some(CursorIcon::Default)
+    } else {
+        state.current_cursor.or(match cursor_status {
+            CursorImageStatus::Named(named_cursor) => Some(named_cursor),
+            _ => None,
+        })
+    };
     if let Some(current_cursor) = named_cursor {
         if !draw_default && current_cursor == CursorIcon::Default {
             return Vec::new();
@@ -360,6 +367,14 @@ where
 }
 
 const ACTIVITY_THROTTLE: Duration = Duration::from_millis(100);
+
+pub fn cursor_position_moved(seat: &Seat<State>, position: Point<f64, Logical>) -> bool {
+    let cursor_state = seat.user_data().get::<CursorState>().unwrap();
+    let mut inner = cursor_state.lock().unwrap();
+    let moved = inner.last_position.is_some_and(|last| last != position);
+    inner.last_position = Some(position);
+    moved
+}
 
 /// Reveal the cursor and (re)arm the idle-hide timer; returns true if it was previously hidden
 pub fn notify_cursor_activity(state: &State, seat: &Seat<State>) -> bool {

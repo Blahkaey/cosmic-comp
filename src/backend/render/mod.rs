@@ -463,6 +463,7 @@ pub enum CursorMode {
     None,
     NotDefault,
     All,
+    DefaultOnly,
 }
 
 #[profiling::function]
@@ -509,6 +510,7 @@ where
                     zoom_scale,
                     now,
                     mode != CursorMode::NotDefault,
+                    mode == CursorMode::DefaultOnly,
                 )
                 .into_iter()
                 .map(|(elem, hotspot)| {

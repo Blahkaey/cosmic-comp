@@ -6,7 +6,7 @@ use crate::{
     shell::{Devices, SeatExt},
     state::{BackendData, Common},
     utils::prelude::*,
-    wayland::protocols::slot_session::SlotOutputConfig,
+    wayland::protocols::slot_session::{PointerMode, SlotOutputConfig},
 };
 use anyhow::{Context, Result, anyhow};
 use cosmic_comp_config::output::comp::OutputConfig;
@@ -213,6 +213,20 @@ impl X11State {
         }
         Ok(())
     }
+
+    pub fn grab_host_pointer(&self) -> Result<()> {
+        let Some(surface) = self.surfaces.first() else {
+            return Ok(());
+        };
+        self.handle.grab_pointer(&surface.window)?;
+        info!("Host pointer grab succeeded; confined to nested window");
+        Ok(())
+    }
+
+    pub fn ungrab_host_pointer(&self) -> Result<()> {
+        self.handle.ungrab_pointer()?;
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -236,6 +250,13 @@ impl Surface {
         let mut fb = renderer
             .bind(&mut buffer)
             .with_context(|| "Failed to bind dmabuf")?;
+        let cursor_mode = match state.slot_session_state.pointer_mode() {
+            PointerMode::Hidden => render::CursorMode::None,
+            PointerMode::Interactive if state.slot_session_state.is_captured() => {
+                render::CursorMode::None
+            }
+            PointerMode::Interactive => render::CursorMode::DefaultOnly,
+        };
         match render::render_output(
             None,
             renderer,
@@ -245,7 +266,7 @@ impl Surface {
             &state.shell,
             state.clock.now(),
             &self.output,
-            render::CursorMode::NotDefault,
+            cursor_mode,
             &mut self.screen_filter_state,
             &state.event_loop_handle,
         ) {
@@ -400,6 +421,8 @@ pub fn init_backend(
         }
         state.common.refresh();
     }
+
+    state.common.config.cosmic_conf.cursor_hide_timeout = Some(1);
 
     if state.common.with_xwayland {
         state.launch_xwayland(None);

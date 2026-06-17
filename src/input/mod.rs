@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    backend::render::{ElementFilter, cursor::notify_cursor_activity},
+    backend::render::{
+        ElementFilter,
+        cursor::{cursor_position_moved, notify_cursor_activity},
+    },
     config::{
         Action, Config, PrivateAction,
         key_bindings::{
@@ -25,8 +28,10 @@ use crate::{
     },
     utils::{prelude::*, quirks::workspace_overview_is_open},
     wayland::handlers::{
-        image_copy_capture::SessionHolder, xwayland_keyboard_grab::XWaylandGrabSeat,
+        compositor::security_context_instance_id, image_copy_capture::SessionHolder,
+        xwayland_keyboard_grab::XWaylandGrabSeat,
     },
+    wayland::protocols::slot_session::{CapturedSlot, PointerMode},
 };
 use calloop::{
     RegistrationToken,
@@ -165,6 +170,130 @@ impl ModifiersShortcutQueue {
 }
 
 impl State {
+    fn release_capture(&mut self) {
+        if let Some(captured) = self.common.slot_session_state.captured() {
+            let pointer = self
+                .common
+                .shell
+                .read()
+                .seats
+                .last_active()
+                .get_pointer()
+                .unwrap();
+            with_pointer_constraint(&captured.surface, &pointer, |constraint| {
+                if let Some(constraint) = constraint
+                    && constraint.is_active()
+                {
+                    constraint.deactivate();
+                }
+            });
+        }
+        if let Err(err) = self.backend.x11().ungrab_host_pointer() {
+            warn!(?err, "Failed to ungrab host pointer");
+        }
+        self.common.slot_session_state.clear_captured();
+    }
+
+    fn captured_alive(&mut self) -> bool {
+        match self.common.slot_session_state.captured() {
+            Some(captured) if captured.surface.is_alive() => true,
+            Some(_) => {
+                self.release_capture();
+                false
+            }
+            None => false,
+        }
+    }
+
+    fn capture_surface(&mut self, surface: WlSurface) {
+        let Some(instance_id) = security_context_instance_id(&surface) else {
+            return;
+        };
+        let Some(rect) = self
+            .common
+            .slot_session_state
+            .slot_rect_for_instance_id(&instance_id)
+        else {
+            return;
+        };
+        let output = self
+            .common
+            .shell
+            .read()
+            .outputs()
+            .next()
+            .cloned()
+            .expect("nested output present");
+
+        if let Err(err) = self.backend.x11().grab_host_pointer() {
+            warn!(?err, "Failed to grab host pointer for slot capture");
+            return;
+        }
+
+        let seat = self.common.shell.read().seats.last_active().clone();
+        let ptr = seat.get_pointer().unwrap();
+        let center = {
+            let rect = rect.to_global(&output).to_f64();
+            rect.loc + rect.size.downscale(2.0)
+        };
+        let under = State::surface_under(center, &output, &self.common.shell.read())
+            .map(|(target, pos)| (target, pos.as_logical()));
+        ptr.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: center.as_logical(),
+                serial: SERIAL_COUNTER.next_serial(),
+                time: self.common.clock.now().as_millis(),
+            },
+        );
+        ptr.frame(self);
+        with_pointer_constraint(&surface, &ptr, |constraint| {
+            if let Some(constraint) = constraint
+                && !constraint.is_active()
+            {
+                constraint.activate();
+            }
+        });
+
+        self.common.slot_session_state.set_captured(CapturedSlot {
+            surface,
+            rect,
+            output,
+        });
+    }
+
+    fn capture_slot_under_pointer(&mut self, seat: &Seat<State>) {
+        if self.captured_alive() {
+            return;
+        }
+        let output = seat.active_output();
+        let global_position = seat.get_pointer().unwrap().current_location().as_global();
+        let surface = {
+            let shell = self.common.shell.read();
+            State::element_under(global_position, &output, &shell, seat)
+                .and_then(|target| target.toplevel().map(Cow::into_owned))
+        };
+        if let Some(surface) = surface {
+            self.capture_surface(surface);
+        }
+    }
+
+    fn toggle_slot_capture(&mut self) {
+        if self.captured_alive() {
+            self.release_capture();
+            return;
+        }
+        let seat = self.common.shell.read().seats.last_active().clone();
+        let surface = seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
+            .and_then(|focus| focus.wl_surface().map(Cow::into_owned));
+        if let Some(surface) = surface {
+            self.capture_surface(surface);
+        }
+    }
+
     #[profiling::function]
     pub fn process_input_event<B: InputBackend>(&mut self, event: InputEvent<B>)
     where
@@ -314,7 +443,6 @@ impl State {
                 let shell = self.common.shell.write();
                 if let Some(seat) = shell.seats.for_device(&event.device()).cloned() {
                     self.common.idle_notifier_state.notify_activity(&seat);
-                    notify_cursor_activity(self, &seat);
                     let current_output = seat.active_output();
 
                     let mut position = seat.get_pointer().unwrap().current_location().as_global();
@@ -681,20 +809,63 @@ impl State {
                     .cloned();
                 if let Some(seat) = maybe_seat {
                     self.common.idle_notifier_state.notify_activity(&seat);
-                    notify_cursor_activity(self, &seat);
                     let output = seat.active_output();
                     let output_geometry = output.geometry();
-                    let position = output_geometry.loc.to_f64()
+                    let mut position = output_geometry.loc.to_f64()
                         + smithay::backend::input::AbsolutePositionEvent::position_transformed(
                             &event,
                             output_geometry.size.as_logical(),
                         )
                         .as_global();
+
+                    let ptr = seat.get_pointer().unwrap();
+
+                    let shell = self.common.shell.read();
+                    let current_under =
+                        State::surface_under(ptr.current_location().as_global(), &output, &shell)
+                            .map(|(target, pos)| (target, pos.as_logical()));
+
+                    let mut pointer_locked = false;
+                    if let Some(surface) = current_under
+                        .as_ref()
+                        .and_then(|(target, _)| target.wl_surface())
+                    {
+                        with_pointer_constraint(&surface, &ptr, |constraint| {
+                            if let Some(constraint) = constraint
+                                && constraint.is_active()
+                                && matches!(&*constraint, PointerConstraint::Locked(_))
+                            {
+                                pointer_locked = true;
+                            }
+                        });
+                    }
+                    std::mem::drop(shell);
+
+                    if pointer_locked {
+                        ptr.frame(self);
+                        return;
+                    }
+
+                    if cursor_position_moved(&seat, position.as_logical()) {
+                        notify_cursor_activity(self, &seat);
+                    }
+
+                    if self.captured_alive()
+                        && let Some(captured) = self.common.slot_session_state.captured()
+                    {
+                        let rect = captured.rect.to_global(&captured.output);
+                        position.x = position
+                            .x
+                            .clamp(rect.loc.x as f64, (rect.loc.x + rect.size.w - 1) as f64);
+                        position.y = position
+                            .y
+                            .clamp(rect.loc.y as f64, (rect.loc.y + rect.size.h - 1) as f64);
+                    }
+
                     let serial = SERIAL_COUNTER.next_serial();
                     let under = State::surface_under(position, &output, &self.common.shell.write())
                         .map(|(target, pos)| (target, pos.as_logical()));
 
-                    let ptr = seat.get_pointer().unwrap();
                     ptr.motion(
                         self,
                         under,
@@ -743,7 +914,6 @@ impl State {
             InputEvent::PointerButton { event, .. } => {
                 use smithay::backend::input::{ButtonState, PointerButtonEvent};
 
-                //
                 let Some(seat) = self
                     .common
                     .shell
@@ -755,7 +925,16 @@ impl State {
                     return;
                 };
                 self.common.idle_notifier_state.notify_activity(&seat);
-                notify_cursor_activity(self, &seat);
+
+                if event.state() == ButtonState::Released
+                    && matches!(
+                        PointerButtonEvent::button(&event),
+                        Some(smithay::backend::input::MouseButton::Left)
+                    )
+                    && self.common.slot_session_state.pointer_mode() == PointerMode::Interactive
+                {
+                    self.capture_slot_under_pointer(&seat);
+                }
 
                 let current_focus = seat.get_keyboard().unwrap().current_focus();
                 let shortcuts_inhibited = current_focus.as_ref().is_some_and(|f| {
@@ -967,7 +1146,6 @@ impl State {
                     .cloned();
                 if let Some(seat) = maybe_seat {
                     self.common.idle_notifier_state.notify_activity(&seat);
-                    notify_cursor_activity(self, &seat);
 
                     if seat.get_keyboard().unwrap().modifier_state().logo
                         && self
@@ -1655,6 +1833,29 @@ impl State {
         let key_matches = |binding_key: Keysym| -> bool {
             raw_syms.contains(&binding_key) || latin_sym.is_some_and(|sym| sym == binding_key)
         };
+
+        if self.common.slot_session_state.pointer_mode() == PointerMode::Interactive {
+            let is_g = key_matches(Keysym::g);
+            if event.state() == KeyState::Pressed && modifiers.logo && is_g {
+                self.common
+                    .slot_session_state
+                    .set_pending_capture_toggle(true);
+                return FilterResult::Intercept(None);
+            }
+            if self.common.slot_session_state.pending_capture_toggle() {
+                if seat.get_keyboard().unwrap().pressed_keys().is_empty() {
+                    self.common
+                        .slot_session_state
+                        .set_pending_capture_toggle(false);
+                    self.common
+                        .event_loop_handle
+                        .insert_idle(|state| state.toggle_slot_capture());
+                }
+                if is_g {
+                    return FilterResult::Intercept(None);
+                }
+            }
+        }
 
         let mut shell = self.common.shell.write();
 

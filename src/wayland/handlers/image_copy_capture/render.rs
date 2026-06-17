@@ -604,6 +604,7 @@ pub fn render_window_to_buffer(
                         1.0,
                         common.clock.now(),
                         true,
+                        false,
                     )
                     .into_iter()
                     .map(|(elem, hotspot)| {
@@ -815,6 +816,7 @@ pub fn render_cursor_to_buffer(
             1.0,
             common.clock.now(),
             true,
+            false,
         )
         .into_iter()
         .map(|(elem, _)| RelocateRenderElement::from_element(elem, (0, 0), Relocate::Relative))

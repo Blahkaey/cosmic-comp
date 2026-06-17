@@ -18,12 +18,14 @@ mod generated {
 use std::collections::HashMap;
 
 use smithay::{
+    output::Output,
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, backend::GlobalId,
+        protocol::wl_surface::WlSurface,
     },
     utils::{Logical, Point, Rectangle, Size},
 };
-use wayland_backend::server::ClientId;
+use wayland_backend::{protocol::WEnum, server::ClientId};
 
 use crate::utils::prelude::Local;
 
@@ -34,10 +36,27 @@ pub trait SlotSessionHandler {
     fn slot_session_finished(&mut self);
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PointerMode {
+    #[default]
+    Hidden,
+    Interactive,
+}
+
 #[derive(Debug)]
 struct ActiveSession {
     live: HashMap<u32, Rectangle<i32, Local>>,
     staged: HashMap<u32, Rectangle<i32, Local>>,
+    pointer_mode: PointerMode,
+    captured: Option<CapturedSlot>,
+    pending_capture_toggle: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CapturedSlot {
+    pub surface: WlSurface,
+    pub rect: Rectangle<i32, Local>,
+    pub output: Output,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -94,6 +113,9 @@ impl SlotSessionState {
         self.session = Some(ActiveSession {
             live: HashMap::new(),
             staged: HashMap::new(),
+            pointer_mode: PointerMode::Hidden,
+            captured: None,
+            pending_capture_toggle: false,
         });
     }
 
@@ -110,12 +132,33 @@ impl SlotSessionState {
         );
     }
 
+    fn set_option(&mut self, option: WEnum<slot_session::SessionOption>, value: u32) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+
+        if let WEnum::Value(slot_session::SessionOption::PointerMode) = option {
+            session.pointer_mode = if value == 0 {
+                PointerMode::Hidden
+            } else {
+                PointerMode::Interactive
+            };
+        }
+    }
+
     fn commit_session(&mut self) {
         let Some(session) = self.session.as_mut() else {
             return;
         };
 
         session.live = std::mem::take(&mut session.staged);
+    }
+
+    pub fn pointer_mode(&self) -> PointerMode {
+        self.session
+            .as_ref()
+            .map(|session| session.pointer_mode)
+            .unwrap_or_default()
     }
 
     pub fn slot_rect_for_instance_id(
@@ -127,6 +170,42 @@ impl SlotSessionState {
             .strip_prefix("partydeck-slot-")
             .and_then(|n| n.parse::<u32>().ok())?;
         session.live.get(&slot).copied()
+    }
+
+    pub fn captured(&self) -> Option<CapturedSlot> {
+        self.session
+            .as_ref()
+            .and_then(|session| session.captured.clone())
+    }
+
+    pub fn is_captured(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.captured.is_some())
+    }
+
+    pub fn set_captured(&mut self, captured: CapturedSlot) {
+        if let Some(session) = self.session.as_mut() {
+            session.captured = Some(captured);
+        }
+    }
+
+    pub fn clear_captured(&mut self) {
+        if let Some(session) = self.session.as_mut() {
+            session.captured = None;
+        }
+    }
+
+    pub fn pending_capture_toggle(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.pending_capture_toggle)
+    }
+
+    pub fn set_pending_capture_toggle(&mut self, pending: bool) {
+        if let Some(session) = self.session.as_mut() {
+            session.pending_capture_toggle = pending;
+        }
     }
 
     fn finish_session(&mut self) -> bool {
@@ -184,6 +263,9 @@ where
                 height,
             } => {
                 state.slot_session_state().set_slot(slot, x, y, width, height);
+            }
+            slot_session::Request::SetOption { option, value } => {
+                state.slot_session_state().set_option(option, value);
             }
             slot_session::Request::Commit => {
                 state.slot_session_state().commit_session();
