@@ -31,12 +31,15 @@ use smithay::{
     desktop::layer_map_for_output,
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
-        calloop::{EventLoop, LoopHandle, ping},
+        calloop::{
+            EventLoop, LoopHandle, ping,
+            timer::{TimeoutAction, Timer},
+        },
         gbm::Device as GbmDevice,
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
         wayland_server::DisplayHandle,
     },
-    utils::{DeviceFd, Transform},
+    utils::{DeviceFd, Monotonic, Time, Transform},
     wayland::{dmabuf::DmabufFeedbackBuilder, presentation::Refresh},
 };
 use std::{borrow::BorrowMut, cell::RefCell, os::unix::io::OwnedFd, time::Duration};
@@ -138,19 +141,49 @@ impl X11State {
             ping::make_ping().with_context(|| "Failed to create output event loop source")?;
         let _token = handle
             .insert_source(source, move |_, _, state| {
-                let x11_state = state.backend.x11();
-                if let Some(surface) = x11_state
-                    .surfaces
-                    .iter_mut()
-                    .find(|s| s.output == output_ref)
+                let now = state.common.clock.now();
+                let refresh_hz = state
+                    .common
+                    .slot_session_state
+                    .output_config()
+                    .map(|c| c.refresh)
+                    .unwrap_or(60)
+                    .max(1);
+                let interval = Duration::from_secs_f64(1.0 / refresh_hz as f64);
+
+                let mut defer = None;
                 {
-                    if let Err(err) =
-                        surface.render_output(&mut x11_state.renderer, &mut state.common)
+                    let x11_state = state.backend.x11();
+                    if let Some(surface) = x11_state
+                        .surfaces
+                        .iter_mut()
+                        .find(|s| s.output == output_ref)
                     {
-                        error!(?err, "Error rendering.");
+                        let elapsed = surface.last_render.map(|last| Time::elapsed(&last, now));
+                        if elapsed.is_none_or(|e| e >= interval) {
+                            if let Err(err) =
+                                surface.render_output(&mut x11_state.renderer, &mut state.common)
+                            {
+                                error!(?err, "Error rendering.");
+                            }
+                            surface.dirty = false;
+                            surface.pending = true;
+                            surface.last_render = Some(now);
+                            surface.throttle_scheduled = false;
+                        } else if !surface.throttle_scheduled {
+                            surface.throttle_scheduled = true;
+                            defer = Some((interval - elapsed.unwrap(), surface.render.clone()));
+                        }
                     }
-                    surface.dirty = false;
-                    surface.pending = true;
+                }
+                if let Some((remaining, render)) = defer {
+                    let _ = state.common.event_loop_handle.insert_source(
+                        Timer::from_duration(remaining),
+                        move |_, _, _| {
+                            render.ping();
+                            TimeoutAction::Drop
+                        },
+                    );
                 }
             })
             .with_context(|| "Failed to add output to event loop")?;
@@ -164,6 +197,8 @@ impl X11State {
             dirty: false,
             pending: true,
             screen_filter_state: ScreenFilterStorage::default(),
+            last_render: None,
+            throttle_scheduled: false,
         });
 
         // schedule first render
@@ -199,7 +234,7 @@ impl X11State {
         // reset size
         if config.mode.0 != (size.w as i32, size.h as i32) {
             if !test_only {
-                config.mode = ((size.w as i32, size.h as i32), None);
+                config.mode = ((size.w as i32, size.h as i32), config.mode.1);
             }
             Err(anyhow::anyhow!("Cannot set window size"))
         } else {
@@ -239,6 +274,8 @@ pub struct Surface {
     dirty: bool,
     pending: bool,
     screen_filter_state: ScreenFilterStorage,
+    last_render: Option<Time<Monotonic>>,
+    throttle_scheduled: bool,
 }
 
 impl Surface {
@@ -416,6 +453,7 @@ pub fn init_backend(
             &state.common.xdg_activation_state,
             state.common.startup_done.clone(),
             &state.common.clock,
+            state.common.slot_session_state.is_slot_mode(),
         ) {
             error!("Unrecoverable output configuration error: {}", err);
         }

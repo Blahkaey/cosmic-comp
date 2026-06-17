@@ -674,6 +674,7 @@ impl State {
             &self.common.xdg_activation_state,
             self.common.startup_done.clone(),
             &self.common.clock,
+            false,
         )?;
         self.common.refresh();
         Ok(())

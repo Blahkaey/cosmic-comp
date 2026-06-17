@@ -407,6 +407,7 @@ impl Config {
         xdg_activation_state: &XdgActivationState,
         startup_done: Arc<AtomicBool>,
         clock: &Clock<Monotonic>,
+        fixed_output: bool,
     ) -> anyhow::Result<()> {
         let outputs = output_state.outputs().collect::<Vec<_>>();
         let mut infos = outputs
@@ -417,29 +418,32 @@ impl Config {
             .collect::<Vec<_>>();
         infos.sort();
 
-        if let Some(configs) = self
-            .dynamic_conf
-            .outputs()
-            .config
-            .get(&infos)
-            .filter(|configs| {
-                if configs
-                    .iter()
-                    .all(|config| config.enabled == OutputState::Disabled)
-                {
-                    if !configs.is_empty() {
-                        error!(
-                            "Broken config, all outputs disabled. Resetting... {:?}",
-                            configs
-                        );
+        let saved_config = if fixed_output {
+            None
+        } else {
+            self.dynamic_conf
+                .outputs()
+                .config
+                .get(&infos)
+                .filter(|configs| {
+                    if configs
+                        .iter()
+                        .all(|config| config.enabled == OutputState::Disabled)
+                    {
+                        if !configs.is_empty() {
+                            error!(
+                                "Broken config, all outputs disabled. Resetting... {:?}",
+                                configs
+                            );
+                        }
+                        false
+                    } else {
+                        true
                     }
-                    false
-                } else {
-                    true
-                }
-            })
-            .cloned()
-        {
+                })
+                .cloned()
+        };
+        if let Some(configs) = saved_config {
             let known_good_configs = outputs
                 .iter()
                 .map(|output| {
@@ -574,7 +578,9 @@ impl Config {
                 }
             }
             output_state.update();
-            self.write_outputs(output_state.outputs());
+            if !fixed_output {
+                self.write_outputs(output_state.outputs());
+            }
         }
 
         Ok(())
