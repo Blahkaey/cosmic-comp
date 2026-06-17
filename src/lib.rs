@@ -12,7 +12,7 @@ use smithay::{
         calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
         wayland_server::{Display, DisplayHandle},
     },
-    utils::{Logical, Size},
+    utils::{Logical, Point, Size},
     wayland::socket::ListeningSocketSource,
 };
 
@@ -122,6 +122,7 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
     let mut with_xwayland = false;
     let mut wayland_display: Option<String> = None;
     let mut fixed_output_mode: Option<(Size<u16, Logical>, u32)> = None;
+    let mut fixed_output_position: Option<Point<i32, Logical>> = None;
     // Parse the arguments
     while let Some(arg) = raw_args.next_os(&mut cursor) {
         match arg.to_str() {
@@ -155,12 +156,20 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
                     .expect("--output-mode requires a WIDTHxHEIGHT@REFRESH value");
                 fixed_output_mode = Some(parse_output_mode(value));
             }
+            Some("--output-position") => {
+                let value = raw_args
+                    .next_os(&mut cursor)
+                    .and_then(|value| value.to_str())
+                    .expect("--output-position requires an X,Y value");
+                fixed_output_position = Some(parse_output_position(value));
+            }
             _ => {}
         }
     }
     let slot_output_config = fixed_output_mode.map(|(mode_size, refresh)| SlotOutputConfig {
         mode_size,
         refresh,
+        position: fixed_output_position,
     });
 
     // setup logger
@@ -298,6 +307,15 @@ fn parse_output_mode(value: &str) -> (Size<u16, Logical>, u32) {
     let height: u16 = height.parse().expect("invalid --output-mode height");
     let refresh: u32 = refresh.parse().expect("invalid --output-mode refresh");
     ((width, height).into(), refresh)
+}
+
+fn parse_output_position(value: &str) -> Point<i32, Logical> {
+    let (x, y) = value
+        .split_once(',')
+        .expect("--output-position must be X,Y");
+    let x: i32 = x.parse().expect("invalid --output-position x");
+    let y: i32 = y.parse().expect("invalid --output-position y");
+    (x, y).into()
 }
 
 fn init_wayland_display(

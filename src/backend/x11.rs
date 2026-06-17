@@ -76,6 +76,9 @@ impl X11State {
                     .size(config.mode_size)
                     .cursor_visible(false)
                     .fullscreen(true);
+            if let Some(position) = config.position {
+                builder = builder.position((position.x as i16, position.y as i16).into());
+            }
         }
         let window = builder
             .build(&self.handle)

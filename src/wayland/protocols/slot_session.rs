@@ -74,6 +74,7 @@ struct SessionSlot {
 pub struct SlotOutputConfig {
     pub mode_size: Size<u16, Logical>,
     pub refresh: u32,
+    pub position: Option<Point<i32, Logical>>,
 }
 
 #[derive(Debug)]
